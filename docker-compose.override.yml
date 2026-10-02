@@ -1,0 +1,47 @@
+# Phase 15: local development conveniences. Docker Compose automatically
+# merges this file on top of docker-compose.yml whenever you run
+# `docker compose up` in this directory — nothing about your day-to-day
+# commands changes. It restores the things you don't want on a real
+# server: live code reload (edit a .py file, see it instantly without
+# rebuilding), and direct host access to Postgres/Redis for debugging with
+# a GUI client (pgAdmin, TablePlus, RedisInsight, etc.).
+#
+# On a real server (Phase 17), skip this file entirely by running
+# `docker compose -f docker-compose.yml up -d` instead of plain
+# `docker compose up`, or just don't copy this file there at all.
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  backend:
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    volumes:
+      - ./backend/app:/app/app
+
+  # Dev: Vite's own dev server with HMR, instead of the prod image's
+  # nginx+static-build target. node_modules stays inside the container
+  # (not bind-mounted) so your host doesn't need npm install locally and a
+  # container-only dependency install can't get shadowed by a host one.
+  frontend:
+    build:
+      target: dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+    command: npm run dev -- --host

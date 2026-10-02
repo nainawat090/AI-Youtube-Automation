@@ -1,0 +1,34 @@
+# Phase 15: keeps `docker build`'s context small and fast, and is a
+# backup guard against secrets/generated media ever ending up inside an
+# image layer — even though the Dockerfile's explicit COPY lines (app/,
+# alembic/, alembic.ini, entrypoint.sh) wouldn't pick most of this up
+# anyway, this holds even if a future COPY is ever made broader (e.g. a
+# careless `COPY . .`).
+
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.git/
+.gitignore
+README.md
+*.md
+
+.venv/
+venv/
+
+# Generated media and local test output — can get large, never belongs in
+# the image (docker-compose.yml bind-mounts the real ./assets and
+# ./output from the project root at runtime instead).
+assets/
+output/
+
+*.log
+.DS_Store

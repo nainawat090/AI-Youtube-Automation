@@ -1,0 +1,189 @@
+# Phase 15: this file is the production-leaning base — no live source-code
+# mounts, no --reload, and Postgres/Redis are reachable only from other
+# containers on this compose network, not from your host. Your day-to-day
+# `docker compose up --build -d` is unaffected: docker-compose.override.yml
+# sits next to this file and Compose auto-merges it, restoring the dev
+# conveniences (hot reload, direct host access to the DB/Redis for a GUI
+# client) you're already used to. A real server deployment (Phase 17) runs
+# `docker compose -f docker-compose.yml up -d` (or simply doesn't have the
+# override file) to skip all of that.
+#
+# One-time step on a Linux production host only (not needed on Windows/Mac
+# Docker Desktop, including this project's own dev setup so far): `backend`
+# and `worker` now run as a non-root user (uid 1000) inside the container
+# (see backend/Dockerfile). For that user to write into the host-mounted
+# ./assets and ./output folders on a real Linux server, run once:
+#   sudo chown -R 1000:1000 ./assets ./output
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ayta_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_youtube_automation
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: ayta_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ayta_backend
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    # DATABASE_URL and REDIS_URL come from .env alone now (both already
+    # point at db:5432 / redis:6379 in .env.example) — a hardcoded
+    # `environment:` override here used to silently win over whatever you
+    # set in .env for these two, which was a real footgun if you ever
+    # changed them. .env is the single source of truth now.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./assets:/app/assets
+      - ./output:/app/output
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Phase 11: runs POST /{project_id}/pipeline jobs in the background.
+  # Shares the same image, code and volumes as `backend` — it's the same
+  # app, just started as a Celery worker instead of the FastAPI server.
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ayta_worker
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      - RUN_MIGRATIONS=false   # backend already runs migrations; worker just waits for them
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./assets:/app/assets
+      - ./output:/app/output
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    # Overrides the Dockerfile's HTTP-based HEALTHCHECK (not applicable —
+    # this container doesn't serve HTTP) with a real Celery liveness check.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout 5"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Phase 14: self-hosted n8n. Independent of the rest of the stack — it
+  # doesn't call into `backend`/`worker` on startup, so it has no
+  # `depends_on` here. Two integration points, both entirely optional and
+  # configured from n8n's own UI + this project's .env:
+  #   - An n8n workflow calls POST http://backend:8000/api/webhooks/n8n/trigger
+  #     (see N8N_INBOUND_WEBHOOK_SECRET) to start a new video.
+  #   - This backend calls an n8n Webhook-node URL you create
+  #     (see N8N_OUTBOUND_WEBHOOK_URL) when a pipeline finishes or fails,
+  #     or a YouTube upload succeeds or fails.
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: ayta_n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${N8N_PUBLIC_WEBHOOK_URL:-http://localhost:5678/}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-change-me}
+      - GENERIC_TIMEZONE=${N8N_TIMEZONE:-UTC}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Phase 10: production target serves the built static bundle via nginx.
+  # No volumes, no depends_on required to start (it's just static files) —
+  # the browser is what talks to `backend`, over whatever VITE_API_BASE_URL
+  # was baked in at build time (see frontend/Dockerfile; override it with
+  # build.args below if backend isn't reachable at localhost:8000 from
+  # wherever the browser loading this page actually is).
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    container_name: ayta_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+  redis_data:
+  n8n_data:

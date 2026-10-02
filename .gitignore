@@ -1,0 +1,41 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*credentials*.json
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Generated media & runtime data
+assets/images/*
+assets/audio/*
+assets/music/*
+assets/captions/*
+assets/videos/*
+!assets/**/.gitkeep
+output/*
+!output/.gitkeep
+
+# Database
+*.sqlite3
+pgdata/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log
